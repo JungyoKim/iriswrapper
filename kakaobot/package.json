@@ -1,0 +1,20 @@
+{
+  "name": "kakaobot-deletion-guard",
+  "version": "2.0.0",
+  "description": "KakaoTalk 삭제/수정 메시지 감지 봇 (Iris + node-iris 기반)",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node -r tsconfig-paths/register src/index.ts"
+  },
+  "dependencies": {
+    "@syncate-core/node-iris": "^1.6.54"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "ts-node": "^10.9.2",
+    "tsconfig-paths": "^4.2.0",
+    "@types/node": "^22.18.8"
+  }
+}

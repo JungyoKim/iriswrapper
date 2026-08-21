@@ -1,0 +1,7 @@
+services:
+  kakaobot:
+    build: .
+    restart: unless-stopped
+    environment:
+      - IRIS_URL=${IRIS_URL}
+      - TARGET_CHAT=${TARGET_CHAT}

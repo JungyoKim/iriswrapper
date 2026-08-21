@@ -1,3 +1,24 @@
+# Toolchain & logs
 .toolchain/
 *.log
 .DS_Store
+
+# Android / Gradle / IntelliJ
+.gradle/
+build/
+**/build/
+.idea/
+*.iml
+local.properties
+output/
+**/output/
+.cxx/
+.externalNativeBuild/
+
+# Node / JS / TS
+node_modules/
+dist/
+.env
+.env*.local
+deleted_messages.txt
+msg_cache.json

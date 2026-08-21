@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.env
+deleted_messages.txt
+msg_cache.json
+/tmp/
+.claude/
