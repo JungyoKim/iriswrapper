@@ -2,9 +2,7 @@
 // Kakaodecrypt : jiru/kakaodecrypt
 package party.qwer.iris
 
-import kotlinx.coroutines.flow.MutableSharedFlow
 import java.util.concurrent.TimeUnit
-
 const val IMAGE_DIR_PATH: String = "/sdcard/Android/data/com.kakao.talk/files"
 
 class Main {
@@ -12,7 +10,7 @@ class Main {
         @JvmStatic
         fun main(args: Array<String>) {
             try {
-                val wsEventFlow = MutableSharedFlow<String>()
+                val eventStream = IrisEventStream()
 
                 // #3: validate the referer is readable at startup; per-send reads go
                 // through RefererProvider so a rotated referer is picked up automatically.
@@ -29,7 +27,7 @@ class Main {
                 // correlate what drifts (kakao proc state / AMS binder / referer) before
                 // the over-time send failure hits.
                 SendDiag.startHeartbeat()
-                val observerHelper = ObserverHelper(kakaoDb, wsEventFlow)
+                val observerHelper = ObserverHelper(kakaoDb, eventStream)
 
                 val dbObserver = DBObserver(kakaoDb, observerHelper)
                 dbObserver.startPolling()
@@ -44,7 +42,7 @@ class Main {
                 println("ImageDeleter started, and will delete images older than 1 hour.")
 
                 val irisServer = IrisServer(
-                    kakaoDb, dbObserver, observerHelper, notificationReferer, wsEventFlow
+                    kakaoDb, dbObserver, observerHelper, notificationReferer, eventStream
                 )
                 irisServer.startServer()
                 println("Iris Server started")

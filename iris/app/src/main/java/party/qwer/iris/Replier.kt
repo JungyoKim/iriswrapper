@@ -6,6 +6,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.util.Base64
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -103,29 +104,36 @@ class Replier {
             AndroidHiddenApi.startService(intent)
         }
 
-        fun sendMessage(referer: String, chatId: Long, msg: String, threadId: Long?) {
-            coroutineScope.launch {
-                messageChannel.send(SendMessageRequest {
+        suspend fun sendMessage(
+            referer: String,
+            chatId: Long,
+            msg: String,
+            threadId: Long?
+        ): Boolean {
+            val completion = CompletableDeferred<Boolean>()
+            messageChannel.send(SendMessageRequest {
+                val delivered = runCatching {
                     sendTextWithVerify(referer, chatId, msg, threadId)
-                })
-            }
+                }.getOrElse { error ->
+                    System.err.println("[SEND] unexpected failure: $error")
+                    false
+                }
+                completion.complete(delivered)
+            })
+            return completion.await()
         }
 
-        // #4 fix: the old path fired the intent and reported success without ever
-        // checking the message was actually delivered, so a frozen KakaoTalk process
-        // or a dropped intent failed silently. Here we snapshot the chat-log id,
-        // send, then poll the DB for our own message; if it never shows up we retry.
         private suspend fun sendTextWithVerify(
             referer: String,
             chatId: Long,
             msg: String,
             threadId: Long?
-        ) {
+        ): Boolean {
             val db = kakaoDb
             if (db == null) {
                 // DB not wired yet (shouldn't happen after startup): best-effort send.
                 sendMessageInternal(referer, chatId, msg, threadId)
-                return
+                return true
             }
 
             val baseline = runCatching { db.latestLogId() }.getOrDefault(0L)
@@ -144,7 +152,7 @@ class Replier {
                     System.err.println(
                         "[SEND] FAILED (threw) after $SEND_MAX_ATTEMPTS attempts chatId=$chatId msg=\"${msg.take(30)}\""
                     )
-                    return
+                    return false
                 }
 
                 var waited = 0L
@@ -158,7 +166,7 @@ class Replier {
                         if (attempt > 1) {
                             System.err.println("[SEND] recovered on attempt $attempt chatId=$chatId")
                         }
-                        return
+                        return true
                     }
                 }
 
@@ -173,6 +181,7 @@ class Replier {
             System.err.println(
                 "[SEND] FAILED (unconfirmed) after $SEND_MAX_ATTEMPTS attempts chatId=$chatId msg=\"${msg.take(30)}\""
             )
+            return false
         }
 
 

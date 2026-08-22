@@ -18,13 +18,18 @@ import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
 import io.ktor.server.websocket.webSocket
+import io.ktor.websocket.CloseReason
+import io.ktor.websocket.Frame
+import io.ktor.websocket.close
+import io.ktor.websocket.readText
 import io.ktor.websocket.send
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.jsonObject
+import org.json.JSONObject
 import party.qwer.iris.model.AotResponse
 import party.qwer.iris.model.ApiResponse
 import party.qwer.iris.model.CommonErrorResponse
@@ -44,10 +49,9 @@ class IrisServer(
     private val dbObserver: DBObserver,
     private val observerHelper: ObserverHelper,
     private val notificationReferer: String,
-    private val wsBroadcastFlow: MutableSharedFlow<String>
+    private val eventStream: IrisEventStream
 ) {
-    val sharedFlow = wsBroadcastFlow.asSharedFlow()
-
+    private val eventAckStore = EventAckStore()
     fun startServer() {
         embeddedServer(Netty, port = Configurable.botSocketPort) {
             install(WebSockets) {
@@ -172,7 +176,7 @@ class IrisServer(
                     val roomId = replyRequest.room.toLong()
                     val threadId = replyRequest.threadId?.toLong()
 
-                    when (replyRequest.type) {
+                    val delivered = when (replyRequest.type) {
                         ReplyType.TEXT -> Replier.sendMessage(
                             notificationReferer,
                             roomId,
@@ -180,16 +184,28 @@ class IrisServer(
                             threadId
                         )
 
-                        ReplyType.IMAGE -> Replier.sendPhoto(
-                            roomId, replyRequest.data.jsonPrimitive.content
-                        )
+                        ReplyType.IMAGE -> {
+                            Replier.sendPhoto(roomId, replyRequest.data.jsonPrimitive.content)
+                            true
+                        }
 
-                        ReplyType.IMAGE_MULTIPLE -> Replier.sendMultiplePhotos(
-                            roomId,
-                            replyRequest.data.jsonArray.map { it.jsonPrimitive.content })
+                        ReplyType.IMAGE_MULTIPLE -> {
+                            Replier.sendMultiplePhotos(
+                                roomId,
+                                replyRequest.data.jsonArray.map { it.jsonPrimitive.content }
+                            )
+                            true
+                        }
                     }
 
-                    call.respond(ApiResponse(success = true, message = "success"))
+                    if (delivered) {
+                        call.respond(ApiResponse(success = true, message = "success"))
+                    } else {
+                        call.respond(
+                            HttpStatusCode.ServiceUnavailable,
+                            ApiResponse(success = false, message = "delivery verification failed")
+                        )
+                    }
                 }
 
                 post("/query") {
@@ -208,6 +224,10 @@ class IrisServer(
                     }
                 }
 
+                get("/event-cursor") {
+                    call.respond(mapOf("cursor" to observerHelper.currentCursor))
+                }
+
                 post("/decrypt") {
                     val decryptRequest = call.receive<DecryptRequest>()
                     val plaintext = KakaoDecrypt.decrypt(
@@ -220,11 +240,64 @@ class IrisServer(
                 }
 
                 webSocket("/ws") {
-                    sharedFlow.collect { msg ->
-                        send(msg)
+                    val clientId = call.request.queryParameters["client"]
+                    val streamCursor = eventStream.currentCursor()
+                    if (!clientId.isNullOrBlank() && !observerHelper.isCursorInitialized) {
+                        close(
+                            CloseReason(
+                                CloseReason.Codes.TRY_AGAIN_LATER,
+                                "event cursor is initializing"
+                            )
+                        )
+                        return@webSocket
+                    }
+                    val afterLogId = if (clientId.isNullOrBlank()) {
+                        call.request.queryParameters["after"]?.toLongOrNull()
+                            ?: streamCursor
+                    } else {
+                        eventAckStore.cursorFor(clientId, streamCursor)
+                    }
+                    val subscription = eventStream.subscribe(
+                        afterLogId,
+                        observerHelper::replayEventsAfter
+                    )
+                    val sender = launch {
+                        for (event in subscription.replay) {
+                            send(event.payload)
+                        }
+                        for (event in subscription.live) {
+                            send(event.payload)
+                        }
+                        close(
+                            CloseReason(
+                                CloseReason.Codes.TRY_AGAIN_LATER,
+                                "event subscriber must resume"
+                            )
+                        )
+                    }
+
+                    try {
+                        for (frame in incoming) {
+                            if (frame is Frame.Text && !clientId.isNullOrBlank()) {
+                                acknowledge(clientId, frame.readText())
+                            }
+                        }
+                    } finally {
+                        eventStream.unsubscribe(subscription.live)
+                        sender.cancelAndJoin()
                     }
                 }
             }
         }.start(wait = true)
+    }
+
+    private fun acknowledge(clientId: String, payload: String) {
+        val acknowledgement = runCatching { JSONObject(payload) }.getOrNull() ?: return
+        if (acknowledgement.optString("type") != "ack") return
+
+        val cursor = acknowledgement.optString("cursor").toLongOrNull() ?: return
+        if (!eventAckStore.acknowledge(clientId, cursor, eventStream.currentCursor())) {
+            System.err.println("[EVENT] rejected acknowledgement client=$clientId cursor=$cursor")
+        }
     }
 }

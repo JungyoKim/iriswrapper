@@ -189,7 +189,7 @@ class KakaoDB {
     // Scans recent rows from the bot in the room, decrypts, and compares the text.
     fun verifyBotMessage(chatId: Long, text: String, afterLogId: Long): Boolean {
         return connection.rawQuery(
-            "SELECT * FROM chat_logs WHERE chat_id = ? AND user_id = ? AND _id > ? ORDER BY _id DESC LIMIT 30",
+            "SELECT _id, message, v FROM chat_logs WHERE chat_id = ? AND user_id = ? AND _id > ? ORDER BY _id DESC LIMIT 30",
             arrayOf(chatId.toString(), Configurable.botId.toString(), afterLogId.toString())
         ).use { cursor ->
             val columnNames = cursor.columnNames
